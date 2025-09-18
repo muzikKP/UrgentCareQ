@@ -1,37 +1,41 @@
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 class PatientQueue:
-  def __init__(self, slot_seconds=600, start_time=None):
-    self.slot_seconds = slot_seconds
-    self.start_time = start_time
-    self.q = []
-    self.last_assigned = None
+    def __init__(self, slot_seconds=900, start_time=None):
+        self.slot_seconds  = slot_seconds
+        self.start_time = start_time
+        self.queue = []
+        self.current_time = start_time
 
-  def _now(self):
-    return datetime.now()
+    def enqueue(self, patient):
+        scheduled_time = self.get_next_available_time()
+        patient.visit.scheduled_time = scheduled_time
+        self.queue.append(patient)
+        return scheduled_time
 
-  def _next_time(self):
-    if self.last_assigned is None:
-      return self.start_time if self.start_time is not None else self._now()
-    return self.last_assigned + timedelta(seconds=self.slot_seconds)
+    def get_next_available_time(self):
+        if not self.queue:
+            return self.start_time
+        else:
+            last_patient_time = self.queue[-1].visit.scheduled_time
+            return last_patient_time + timedelta(seconds=self.slot_seconds)
 
-  def enqueue(self, p):
-    t = self._next_time()
-    p.visit.scheduled_time = t.strftime("%Y-%m-%d %H:%M")
-    self.last_assigned = t
-    self.q.append(p)
-    return p.visit.scheduled_time
+    def peek(self):
+        return self.queue[0] if self.queue else None
 
-  def dequeue(self):
-    if not self.q:
-      return None
-    return self.q.pop(0)
+    def size(self):
+        return len(self.queue)
 
-  def peek(self):
-    return self.q[0] if self.q else None
+    def dequeue(self):
+        return self.queue.pop(0) if self.queue else None
 
-  def size(self):
-    return len(self.q)
+    def advance_time(self):
+        if self.current_time:
+            self.current_time += timedelta(seconds=self.slot_seconds)
 
-  def schedule_snapshot(self):
-    return [(p.full_name(), getattr(p.visit, "scheduled_time", None)) for p in self.q]
+    def get_scheduled_times(self):
+        return [(patient.full_name(), patient.visit.scheduled_time) for patient in self.queue]
+
+    # added: return list of patients (used by main.py)
+    def get_all_patients(self):
+        return list(self.queue)
