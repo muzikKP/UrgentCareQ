@@ -11,7 +11,7 @@ form_html = """
 </head>
 <body>
     <h2>Urgent Care Check-In</h2>
-    <form method="post" action="/submit">
+    <form method="post" action="http://127.0.0.1:5001/api/patient/joinqueue">
         <label>Name:</label><br>
         <input type="text" name="patient_name"><br><br>
 
