@@ -39,6 +39,14 @@ class PatientQueue:
     def get_all_patients(self):
         return list(self.patients)
 
+    # New: Find and return a patient by name
+    def find_patient_by_name(self, full_name):
+        """Find and return the first patient matching the full name. Returns None if not found."""
+        for patient in self.patients:
+            if patient.full_name() == full_name:
+                return patient
+        return None
+
     # New: Remove a specific patient by object reference
     def remove_patient(self, patient):
         """Remove a specific patient from the schedule. Returns True if removed, False if not found."""

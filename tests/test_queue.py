@@ -271,6 +271,60 @@ class TestPatientQueue(unittest.TestCase):
         self.assertEqual(all_patients[0].full_name(), "John Doe")
         self.assertEqual(all_patients[1].full_name(), "Jane Smith")
 
+    def test_find_patient_by_name(self):
+        """Test finding a patient by full name."""
+        p1 = self._create_patient("John", "Doe", "Fever")
+        p2 = self._create_patient("Jane", "Smith", "Sprained ankle")
+        p3 = self._create_patient("Bob", "Johnson", "Headache")
+        
+        self.pq.enqueue(p1)
+        self.pq.enqueue(p2)
+        self.pq.enqueue(p3)
+        
+        # Find existing patient
+        found = self.pq.find_patient_by_name("Jane Smith")
+        self.assertIsNotNone(found)
+        self.assertEqual(found.full_name(), "Jane Smith")
+        self.assertEqual(found.visit.chief_complaint, "Sprained ankle")
+        self.assertEqual(found.visit.scheduled_time, self.start_time + timedelta(seconds=900))
+
+    def test_find_patient_by_name_not_found(self):
+        """Test finding a patient that doesn't exist returns None."""
+        p1 = self._create_patient("John", "Doe")
+        self.pq.enqueue(p1)
+        
+        found = self.pq.find_patient_by_name("Jane Smith")
+        self.assertIsNone(found)
+
+    def test_find_patient_by_name_with_middle_initial(self):
+        """Test finding a patient with middle initial."""
+        p1 = self._create_patient("John", "Doe")
+        p1.personal.middle_initial = "Q"
+        self.pq.enqueue(p1)
+        
+        # Should find by full name including middle initial
+        found = self.pq.find_patient_by_name("John Q. Doe")
+        self.assertIsNotNone(found)
+        self.assertEqual(found.full_name(), "John Q. Doe")
+
+    def test_find_patient_by_name_first_match(self):
+        """Test that find returns the first matching patient when duplicates exist."""
+        p1 = self._create_patient("John", "Doe", "Fever")
+        p2 = self._create_patient("John", "Doe", "Cough")
+        
+        self.pq.enqueue(p1)
+        self.pq.enqueue(p2)
+        
+        # Should return the first one (Fever)
+        found = self.pq.find_patient_by_name("John Doe")
+        self.assertEqual(found.visit.chief_complaint, "Fever")
+        self.assertEqual(found.visit.scheduled_time, self.start_time)
+
+    def test_find_patient_empty_queue(self):
+        """Test finding a patient in an empty queue returns None."""
+        found = self.pq.find_patient_by_name("John Doe")
+        self.assertIsNone(found)
+
     def test_get_all_patients_returns_copy(self):
         """Test that get_all_patients returns a copy, not the original list."""
         p1 = self._create_patient("John", "Doe")
