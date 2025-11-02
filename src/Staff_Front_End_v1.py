@@ -1,4 +1,5 @@
 from flask import Flask, render_template_string, request
+import requests
 
 app = Flask(__name__)
 
@@ -80,14 +81,32 @@ def index():
 @app.route("/search", methods=["POST"])
 def search():
     name = request.form.get("search_name", "").strip()
-    # For now, just display what user typed (backend guy will connect this later)
-    result_text = f"Searched for patient: {name}" if name else "No name entered."
+    if not name:
+        return render_template_string(staff_html, result="No name entered.")
+    
+    try:
+        response = requests.get(f"http://127.0.0.1:5001/api/staff/search", params={"name": name})
+        if response.status_code != 200:
+            result_text = f"Backend error: {response.status_code} - {response.text[:100]}"
+        else:
+            search_data = response.json()
+            matches = search_data.get("patients", [])
+            result_text = f"Found {len(matches)} patient(s)" if matches else "No patients found."
+    except Exception as e:
+        result_text = f"Error: {e}"
     return render_template_string(staff_html, result=result_text)
 
 @app.route("/show_queue", methods=["GET"])
 def show_queue():
-    # Placeholder: backend guy will later pull queue info here
-    result_text = "Queue display placeholder (backend integration pending)."
+    try:
+        response = requests.get("http://127.0.0.1:5001/api/staff/queue")
+        if response.status_code != 200:
+            result_text = f"Backend error: {response.status_code} - {response.text[:100]}"
+        else:
+            queue_data = response.json()
+            result_text = f"Total patients: {queue_data.get('total_patients', 0)}"
+    except Exception as e:
+        result_text = f"Error: {e}"
     return render_template_string(staff_html, result=result_text)
 
 if __name__ == "__main__":

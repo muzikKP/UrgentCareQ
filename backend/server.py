@@ -35,7 +35,7 @@ queue_collection = db.queue if db is not None else None
 
 
 # default route
-@app.get("/")
+@app.route("/", methods=["GET"])
 def root_service():
     return json.dumps({"msg": "UrgentCareQ Backend", "port": PORT}), 200, {"Content-Type": "application/json"}
 
@@ -67,6 +67,68 @@ def staff_reset():
     queue_collection.insert_one(doc)
     return json.dumps({"queue_id": "main", "start_time": now.isoformat(), "slot_seconds": 900}), 200, {"Content-Type": "application/json"}
 
+
+# staff/queue: get entire queue with all patients
+@app.route("/api/staff/queue", methods=["GET"])
+def staff_get_queue():
+    if queue_collection is None:
+        return json.dumps({"error": "MONGODB_URI not set"}), 500, {"Content-Type": "application/json"}
+
+    qdoc = queue_collection.find_one({"queue_id": "main"}) or queue_collection.find_one({})
+    if qdoc is None:
+        return json.dumps({"error": "queue not initialized"}), 400, {"Content-Type": "application/json"}
+
+    patients = qdoc.get("patients", [])
+    patients_with_position = []
+    i = 0
+    for p in patients:
+        patient_data = dict(p)
+        # ensure datetime fields are isoformatted
+        sc = patient_data.get("scheduled_time")
+        if isinstance(sc, datetime):
+            patient_data["scheduled_time"] = sc.isoformat()
+        patient_data["position"] = i
+        patients_with_position.append(patient_data)
+        i += 1
+
+    return json.dumps({
+        "queue_id": qdoc.get("queue_id", "main"),
+        "start_time": qdoc.get("start_time").isoformat(),
+        "slot_seconds": qdoc.get("slot_seconds", 900),
+        "total_patients": len(patients),
+        "created_at": qdoc.get("created_at").isoformat(),
+        "patients": patients_with_position
+    }), 200, {"Content-Type": "application/json"}
+
+
+# staff/search: search patients by name
+@app.route("/api/staff/search", methods=["GET"])
+def staff_search():
+    if queue_collection is None:
+        return json.dumps({"error": "MONGODB_URI not set"}), 500, {"Content-Type": "application/json"}
+
+    qdoc = queue_collection.find_one({"queue_id": "main"}) or queue_collection.find_one({})
+    if qdoc is None:
+        return json.dumps({"error": "queue not initialized"}), 400, {"Content-Type": "application/json"}
+
+    search_name = (request.args.get("name") or "").strip()
+    if not search_name:
+        return json.dumps({"patients": []}), 200, {"Content-Type": "application/json"}
+
+    patients = qdoc.get("patients", [])
+    matches = []
+    i = 0
+    for p in patients:
+        if search_name.lower() in p.get("name", "").lower():
+            patient_data = dict(p)
+            sc = patient_data.get("scheduled_time")
+            if isinstance(sc, datetime):
+                patient_data["scheduled_time"] = sc.isoformat()
+            patient_data["position"] = i
+            matches.append(patient_data)
+        i += 1
+
+    return json.dumps({"patients": matches}), 200, {"Content-Type": "application/json"}
 
 
 # -----------------------------------------------------------
@@ -117,7 +179,58 @@ def patient_joinqueue():
     }), 200, {"Content-Type": "application/json"}
 
 
+# patient/getstatus: get patient's queue status
+@app.route("/api/patient/getstatus", methods=["GET"])
+def patient_getstatus():
+    if queue_collection is None:
+        return json.dumps({"error": "MONGODB_URI not set"}), 500, {"Content-Type": "application/json"}
+
+    qdoc = queue_collection.find_one({"queue_id": "main"}) or queue_collection.find_one({})
+    if qdoc is None:
+        return json.dumps({"error": "queue not initialized"}), 400, {"Content-Type": "application/json"}
+
+    name = (request.args.get("patient_name") or "").strip()
+    phone = request.args.get("phone") or ""
+    if not name or not phone:
+        return json.dumps({"error": "patient_name and phone required"}), 400, {"Content-Type": "application/json"}
+
+    patients = qdoc.get("patients", [])
+    patient = None
+    position = None
+    i = 0
+    for p in patients:
+        if p.get("name", "").strip() == name and p.get("phone", "") == phone:
+            patient = p
+            position = i
+            break
+        i += 1
+
+    if patient is None:
+        return json.dumps({"error": "patient not found"}), 404, {"Content-Type": "application/json"}
+
+    slot_seconds = int(qdoc.get("slot_seconds", 900))
+    scheduled_dt = patient.get("scheduled_time")
+    now = datetime.now()
+    wait_seconds = max(0, (scheduled_dt - now).total_seconds())
+    wait_minutes = int(wait_seconds // 60)
+
+    return json.dumps({
+        "name": patient.get("name"),
+        "phone": patient.get("phone"),
+        "position": position,
+        "scheduled_time": scheduled_dt.isoformat(),
+        "estimated_wait_minutes": wait_minutes,
+        "checked_in": patient.get("checked_in", False)
+    }), 200, {"Content-Type": "application/json"}
+
+
 if __name__ == "__main__":
+    # Debug: print registered routes and file path to ensure correct server is running
+    try:
+        print("Loaded server from:", __file__)
+        print("Registered routes:",[r.rule for r in app.url_map.iter_rules()])
+    except Exception:
+        pass
     app.run(host="127.0.0.1", port=PORT)
 
 
