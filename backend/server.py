@@ -105,7 +105,8 @@ def patient_joinqueue():
         "dob": dob,
         "insurance": insurance,
         "symptoms": symptoms,
-        "scheduled_time": scheduled_dt
+        "scheduled_time": scheduled_dt,
+        "checked_in": False
     }
 
     queue_collection.update_one({"_id": qdoc["_id"]}, {"$push": {"patients": patient}})
@@ -114,6 +115,52 @@ def patient_joinqueue():
         "position": position,
         "scheduled_time": scheduled_dt.isoformat(),
         "estimated_wait_minutes": (position * slot_seconds) // 60
+    }), 200, {"Content-Type": "application/json"}
+
+
+# patient/checkin: marks a patient as checked in
+@app.post("/api/patient/checkin")
+def patient_checkin():
+    # mongo uri check
+    if queue_collection is None:
+        return json.dumps({"error": "MONGODB_URI not set"}), 500, {"Content-Type": "application/json"}
+
+    name = (request.form.get("patient_name") or "").strip()
+    if not name:
+        return json.dumps({"error": "Patient name is required"}), 400, {"Content-Type": "application/json"}
+
+    # Find queue
+    qdoc = queue_collection.find_one({"queue_id": "main"}) or queue_collection.find_one({})
+    if qdoc is None:
+        return json.dumps({"error": "queue not initialized"}), 400, {"Content-Type": "application/json"}
+
+    # Find patient in the queue by name
+    patients = qdoc.get("patients", [])
+    patient_found = False
+    scheduled_time = None
+    
+    for i, patient in enumerate(patients):
+        if patient.get("name", "").strip().lower() == name.lower():
+            # Mark as checked in
+            patients[i]["checked_in"] = True
+            scheduled_time = patient.get("scheduled_time")
+            patient_found = True
+            break
+    
+    if not patient_found:
+        return json.dumps({"error": f"Patient '{name}' not found in queue"}), 404, {"Content-Type": "application/json"}
+    
+    # Update the queue with the modified patients array
+    queue_collection.update_one(
+        {"_id": qdoc["_id"]},
+        {"$set": {"patients": patients}}
+    )
+
+    return json.dumps({
+        "message": "Check-in successful",
+        "patient_name": name,
+        "checked_in": True,
+        "scheduled_time": scheduled_time.isoformat() if scheduled_time else None
     }), 200, {"Content-Type": "application/json"}
 
 
