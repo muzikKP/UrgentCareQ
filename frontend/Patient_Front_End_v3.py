@@ -1,5 +1,6 @@
 from flask import Flask, request, render_template_string
 import requests
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
@@ -11,7 +12,7 @@ form_html = """
     <style>
         body { font-family: Arial, sans-serif; margin: 40px; background-color: #f8f9fa; }
         h2 { color: #007bff; }
-        form, .result {
+        form {
             background: white;
             padding: 20px;
             border-radius: 10px;
@@ -35,16 +36,10 @@ form_html = """
         input[type="submit"]:hover {
             background-color: #0056b3;
         }
-        .info {
-            margin-top: 20px;
-            background: #e9f7ef;
-            padding: 15px;
-            border-radius: 8px;
-        }
     </style>
 </head>
 <body>
-    <h2>Urgent Care Patient Registration</h2>
+    <h2>Urgent Care Check-In</h2>
     <form method="post" action="/submit">
         <label>Name:</label><br>
         <input type="text" name="patient_name" required><br>
@@ -61,11 +56,8 @@ form_html = """
         <label>Symptoms:</label><br>
         <textarea name="symptoms" rows="3"></textarea><br>
 
-        <input type="submit" value="Join Queue">
+        <input type="submit" value="Check In">
     </form>
-    <div class="info">
-        <p><strong>Note:</strong> After registering, please check in with staff when you arrive at the clinic.</p>
-    </div>
 </body>
 </html>
 """
@@ -124,21 +116,20 @@ def submit():
     }
 
     try:
-        # Send data to backend
         response = requests.post("http://127.0.0.1:5001/api/patient/joinqueue", data=data)
         resp_json = response.json()
     except Exception as e:
         return f"<p>Error connecting to backend: {e}</p>", 500
 
-    # Handle backend JSON response gracefully
-    position = resp_json.get("position", "N/A")
-    scheduled_time = resp_json.get("scheduled_time", "Unknown")
-    estimated_wait = resp_json.get("estimated_wait_minutes", "N/A")
+    # calculate readable scheduled time
+    estimated_wait = resp_json.get("estimated_wait_minutes", 0)
+    scheduled_dt = datetime.now() + timedelta(minutes=estimated_wait)
+    readable_time = scheduled_dt.strftime("%I:%M %p")  # e.g., 06:20 PM
 
     return render_template_string(
         result_html,
-        position=position,
-        scheduled_time=scheduled_time,
+        position=resp_json.get("position", "N/A"),
+        scheduled_time=readable_time,
         estimated_wait_minutes=estimated_wait
     )
 
