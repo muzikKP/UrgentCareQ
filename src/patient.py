@@ -61,6 +61,7 @@ class Administrative:
     self.financial_responsibility_ack = False
     self.photo_release_ack = False
     self.notes = ""
+    self.checked_in = False
 
 class Patient:
   def __init__(self):
