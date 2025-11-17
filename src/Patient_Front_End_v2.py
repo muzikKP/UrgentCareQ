@@ -102,7 +102,13 @@ result_html = """
         <h2>Check-In Successful!</h2>
         <p><strong>Queue Position:</strong> {{ position }}</p>
         <p><strong>Scheduled Time:</strong> {{ scheduled_time }}</p>
-        <p><strong>Estimated Wait:</strong> {{ estimated_wait_minutes }} minutes</p>
+        <p><strong>Base Wait Time:</strong> {{ estimated_wait_minutes }} minutes</p>
+        {% if global_delay %}
+        <p><strong>Current Delay:</strong> +{{ global_delay }} minutes</p>
+        <p style="font-size: 18px; color: #dc3545;"><strong>Total Wait Time:</strong> {{ total_wait }} minutes</p>
+        {% else %}
+        <p><strong>Total Wait Time:</strong> {{ estimated_wait_minutes }} minutes</p>
+        {% endif %}
         <a href="/" class="back-btn">← Back to Check-In</a>
     </div>
 </body>
@@ -134,12 +140,16 @@ def submit():
     position = resp_json.get("position", "N/A")
     scheduled_time = resp_json.get("scheduled_time", "Unknown")
     estimated_wait = resp_json.get("estimated_wait_minutes", "N/A")
+    total_wait = resp_json.get("total_wait_minutes", estimated_wait)
+    global_delay = resp_json.get("global_delay_minutes", 0)
 
     return render_template_string(
         result_html,
         position=position,
         scheduled_time=scheduled_time,
-        estimated_wait_minutes=estimated_wait
+        estimated_wait_minutes=estimated_wait,
+        total_wait=total_wait,
+        global_delay=global_delay
     )
 
 if __name__ == "__main__":
