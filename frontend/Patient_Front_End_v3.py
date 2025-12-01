@@ -58,8 +58,18 @@ form_html = """
         <label>Insurance Number:</label><br>
         <input type="text" name="insurance"><br>
 
-        <label>Symptoms:</label><br>
-        <textarea name="symptoms" rows="3"></textarea><br>
+        <label>Reason for Checkup:</label><br>
+        <select name="reason">
+            <option value="Flu-like symptoms">Flu-like symptoms</option>
+            <option value="Minor laceration">Minor laceration</option>
+            <option value="COVID-19 test">COVID-19 test</option>
+            <option value="Common infections (ear, pink eye)">Common infections (ear, pink eye)</option>
+            <option value="Sore throat / strep check">Sore throat / strep check</option>
+            <option value="Sprain/strain">Sprain/strain</option>
+            <option value="Rash or allergic reaction (mild)">Rash or allergic reaction (mild)</option>
+            <option value="Urinary symptoms (possible UTI)">Urinary symptoms (possible UTI)</option>
+            <option value="Medication refill/quick consult">Medication refill/quick consult</option>
+        </select><br>
 
         <input type="submit" value="Join Queue">
     </form>
@@ -101,14 +111,11 @@ result_html = """
     <div class="result">
         <h2>Check-In Successful!</h2>
         <p><strong>Queue Position:</strong> {{ position }}</p>
-        <p><strong>Scheduled Time:</strong> {{ scheduled_time }}</p>
-        <p><strong>Base Wait Time:</strong> {{ estimated_wait_minutes }} minutes</p>
-        {% if global_delay %}
-        <p><strong>Current Delay:</strong> +{{ global_delay }} minutes</p>
-        <p style="font-size: 18px; color: #dc3545;"><strong>Total Wait Time:</strong> {{ total_wait }} minutes</p>
-        {% else %}
-        <p><strong>Total Wait Time:</strong> {{ estimated_wait_minutes }} minutes</p>
-        {% endif %}
+        <p><strong>Expected Start:</strong> {{ expected_start_time }}</p>
+        <p><strong>Expected End:</strong> {{ expected_end_time }}</p>
+        <p><strong>Estimated Duration:</strong> {{ expected_duration_minutes }} minutes</p>
+        <p style="font-size: 18px;"><strong>Estimated Wait:</strong> {{ initial_wait_minutes }} minutes</p>
+        <p><strong>Check in by:</strong> {{ check_in_by }}</p>
         <a href="/" class="back-btn">← Back to Check-In</a>
     </div>
 </body>
@@ -126,7 +133,7 @@ def submit():
         "phone": request.form["phone"],
         "dob": request.form["dob"],
         "insurance": request.form["insurance"],
-        "symptoms": request.form["symptoms"]
+        "reason": request.form["reason"]
     }
 
     try:
@@ -138,18 +145,23 @@ def submit():
 
     # Handle backend JSON response gracefully
     position = resp_json.get("position", "N/A")
-    scheduled_time = resp_json.get("scheduled_time", "Unknown")
-    estimated_wait = resp_json.get("estimated_wait_minutes", "N/A")
-    total_wait = resp_json.get("total_wait_minutes", estimated_wait)
-    global_delay = resp_json.get("global_delay_minutes", 0)
+    # Display queue position starting at 1 for users
+    if isinstance(position, int):
+        position = position + 1
+    expected_start_time = resp_json.get("expected_start_time") or resp_json.get("scheduled_time", "Unknown")
+    expected_end_time = resp_json.get("expected_end_time", "Unknown")
+    expected_duration_minutes = resp_json.get("expected_duration_minutes", "N/A")
+    initial_wait_minutes = resp_json.get("initial_wait_minutes", "N/A")
+    check_in_by = resp_json.get("check_in_by", "N/A")
 
     return render_template_string(
         result_html,
         position=position,
-        scheduled_time=scheduled_time,
-        estimated_wait_minutes=estimated_wait,
-        total_wait=total_wait,
-        global_delay=global_delay
+        expected_start_time=expected_start_time,
+        expected_end_time=expected_end_time,
+        expected_duration_minutes=expected_duration_minutes,
+        initial_wait_minutes=initial_wait_minutes,
+        check_in_by=check_in_by
     )
 
 if __name__ == "__main__":

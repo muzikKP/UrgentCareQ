@@ -79,39 +79,36 @@ staff_html = """
         <h2>Urgent Care Staff Dashboard</h2>
 
         <div class="section">
-            <h3>Check In Patient</h3>
-            <form method="post" action="/checkin">
-                <input type="text" name="patient_name" placeholder="Patient name" required style="width: 100%; margin-bottom: 10px;">
-                <input type="date" name="dob" placeholder="DOB (optional for disambiguation)" style="width: 100%; margin-bottom: 10px;">
-                <button type="submit" class="btn-success">Check In</button>
-            </form>
+            <h3>Patient Actions</h3>
+            <input type="text" id="patient_name" placeholder="Enter patient name" required style="width: 100%; margin-bottom: 10px; padding: 10px;">
+            <input type="date" id="dob" placeholder="DOB (optional)" style="width: 100%; margin-bottom: 15px; padding: 10px;">
+            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                <form method="post" action="/checkin" style="flex: 1; min-width: 120px;">
+                    <input type="hidden" name="patient_name" id="checkin_name">
+                    <input type="hidden" name="dob" id="checkin_dob">
+                    <button type="submit" class="btn-success" onclick="copyName('checkin')" style="width: 100%;">Check In</button>
+                </form>
+                <form method="post" action="/admit" style="flex: 1; min-width: 120px;">
+                    <input type="hidden" name="patient_name" id="admit_name">
+                    <button type="submit" class="btn-success" onclick="copyName('admit')" style="width: 100%;">Admit</button>
+                </form>
+                <form method="post" action="/checkout" style="flex: 1; min-width: 120px;">
+                    <input type="hidden" name="patient_name" id="checkout_name">
+                    <button type="submit" class="btn-success" onclick="copyName('checkout')" style="width: 100%;">Checkout</button>
+                </form>
+            </div>
         </div>
 
-        <div class="section">
-            <h3>Admit Patient (Start Appointment)</h3>
-            <form method="post" action="/admit">
-                <input type="text" name="patient_name" placeholder="Patient name" required style="width: 100%; margin-bottom: 10px;">
-                <button type="submit" class="btn-success">Admit</button>
-            </form>
-        </div>
-
-        <div class="section">
-            <h3>Checkout Patient (Complete Appointment)</h3>
-            <form method="post" action="/checkout">
-                <input type="text" name="patient_name" placeholder="Patient name" required style="width: 100%; margin-bottom: 10px;">
-                <button type="submit" class="btn-success">Checkout</button>
-            </form>
-        </div>
-
-        <div class="section">
-            <h3>Search Patient</h3>
-            <form method="post" action="/search">
-                <div class="search-bar">
-                    <input type="text" name="search_name" placeholder="Search patient by name">
-                    <button type="submit">Search</button>
-                </div>
-            </form>
-        </div>
+        <script>
+        function copyName(action) {
+            const name = document.getElementById('patient_name').value;
+            const dob = document.getElementById('dob').value;
+            document.getElementById(action + '_name').value = name;
+            if (action === 'checkin' && dob) {
+                document.getElementById('checkin_dob').value = dob;
+            }
+        }
+        </script>
 
         <div class="section">
             <form method="get" action="/show_queue">
@@ -301,7 +298,6 @@ def checkout():
 @app.route("/search", methods=["POST"])
 def search():
     name = request.form.get("search_name", "").strip()
-    # For now, just display what user typed (backend guy will connect this later)
     result_text = f"<p>Searched for patient: {name}</p>" if name else "<p>No name entered.</p>"
     return render_template_string(
         staff_html,
@@ -319,29 +315,39 @@ def show_queue():
         if response.status_code == 200:
             patients = resp_json.get("patients", [])
             total = resp_json.get("total_patients", 0)
-            global_wait = resp_json.get("global_wait_time_minutes", 0)
+            global_delay = resp_json.get("global_delay_minutes", 0)
+            room_free_at = resp_json.get("room_free_at", None)
             
             if total == 0:
                 result_html = "<p>Queue is empty. No patients waiting.</p>"
             else:
                 result_html = f"<p><strong>Total Patients:</strong> {total}</p>"
-                if global_wait > 0:
-                    result_html += f'<p style="color: #dc3545;"><strong>⏱️ Global Wait Time:</strong> +{global_wait} minutes</p>'
+                if room_free_at:
+                    result_html += f'<p><strong>Next Free At:</strong> {room_free_at}</p>'
+                if global_delay != 0:
+                    if global_delay > 0:
+                        result_html += f'<p style="color: #dc3545;"><strong>⏱️ Overall Delay:</strong> +{global_delay} minutes</p>'
+                    else:
+                        result_html += f'<p style="color: #28a745;"><strong>⏱️ Overall Ahead:</strong> {global_delay} minutes</p>'
                 result_html += '<table style="width: 100%; border-collapse: collapse; margin-top: 15px;">'
                 result_html += '''<tr style="background-color: #f8f9fa; border-bottom: 2px solid #dee2e6;">
                     <th style="padding: 8px; text-align: left;">#</th>
                     <th style="padding: 8px; text-align: left;">Name</th>
+                    <th style="padding: 8px; text-align: left;">DOB</th>
                     <th style="padding: 8px; text-align: left;">Status</th>
-                    <th style="padding: 8px; text-align: left;">Scheduled Time</th>
-                    <th style="padding: 8px; text-align: left;">Symptoms</th>
+                    <th style="padding: 8px; text-align: left;">Expected Start</th>
+                    <th style="padding: 8px; text-align: left;">Expected End</th>
+                    <th style="padding: 8px; text-align: left;">Reason for Checkup</th>
                 </tr>'''
                 
                 for patient in patients:
                     pos = patient.get("position", 0) + 1
                     name = patient.get("name", "Unknown")
+                    dob = patient.get("dob", "N/A")
                     status = patient.get("status", "waiting")
-                    scheduled = patient.get("scheduled_time", "N/A")
-                    symptoms = patient.get("symptoms", "N/A")
+                    expected_start = patient.get("expected_start_time") or patient.get("scheduled_time", "N/A")
+                    expected_end = patient.get("expected_end_time", "N/A")
+                    reason = patient.get("reason", "N/A")
                     
                     # Color code status
                     status_color = {
@@ -361,9 +367,11 @@ def show_queue():
                     result_html += f'''<tr style="border-bottom: 1px solid #dee2e6;">
                         <td style="padding: 8px;">{pos}</td>
                         <td style="padding: 8px;"><strong>{name}</strong></td>
+                        <td style="padding: 8px; font-size: 12px;">{dob}</td>
                         <td style="padding: 8px; color: {status_color};">{status_icon} {status}</td>
-                        <td style="padding: 8px; font-size: 12px;">{scheduled}</td>
-                        <td style="padding: 8px; font-size: 12px;">{symptoms[:50]}...</td>
+                        <td style="padding: 8px; font-size: 12px;">{expected_start}</td>
+                        <td style="padding: 8px; font-size: 12px;">{expected_end}</td>
+                        <td style="padding: 8px; font-size: 12px;">{(reason or 'N/A')[:50]}...</td>
                     </tr>'''
                 
                 result_html += '</table>'

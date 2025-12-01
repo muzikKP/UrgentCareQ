@@ -13,6 +13,9 @@ from dotenv import load_dotenv
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
 from datetime import datetime, timedelta
+import math
+import threading
+import time
 
 PORT: int = 5001
 
@@ -33,12 +36,26 @@ client = MongoClient(uri, server_api=ServerApi('1')) if uri else None
 db = client.urgentcare if client is not None else None
 queue_collection = db.queue if db is not None else None
 
-# Global wait time (in minutes) - placeholder for delay tracking
-GLOBAL_WAIT_TIME_MINUTES = 15
+# Default prep time (minutes) added to every visit, time needed before / after patients to prepare the room
+PREP_MINUTES = 10
+
+# These are estimates based on typical urgent care guidance; actuals vary by clinic.
+# in the future, these can be reassigned to estimates derived from data collected from the clinic
+REASON_ESTIMATE_MINUTES = {
+    "Flu-like symptoms": 20,
+    "Minor laceration": 25,
+    "COVID-19 test": 10,
+    "Common infections (ear, pink eye)": 15,
+    "Sore throat / strep check": 15,
+    "Sprain/strain": 30,
+    "Rash or allergic reaction (mild)": 15,
+    "Urinary symptoms (possible UTI)": 20,
+    "Medication refill/quick consult": 10,
+}
 
 
 # default route
-@app.route("/", methods=["GET"])
+@app.get("/")
 def root_service():
     return json.dumps({"msg": "UrgentCareQ Backend", "port": PORT}), 200, {"Content-Type": "application/json"}
 
@@ -63,7 +80,7 @@ def staff_get_queue():
         return json.dumps({"error": "queue not initialized", "patients": []}), 200, {"Content-Type": "application/json"}
 
     patients = qdoc.get("patients", [])
-    
+
     # Format patient data for frontend
     formatted_patients = []
     for i, patient in enumerate(patients):
@@ -72,19 +89,27 @@ def staff_get_queue():
             "name": patient.get("name", "Unknown"),
             "phone": patient.get("phone", "N/A"),
             "dob": patient.get("dob", "N/A"),
-            "symptoms": patient.get("symptoms", "N/A"),
+            "reason": patient.get("reason", "N/A"),
             "status": patient.get("status", "waiting"),
             "checked_in": patient.get("checked_in", False),
-            "scheduled_time": patient.get("scheduled_time").isoformat() if patient.get("scheduled_time") else "N/A"
+            "scheduled_time": patient.get("scheduled_time").isoformat() if patient.get("scheduled_time") else "N/A",
+            "expected_start_time": patient.get("expected_start_time").isoformat() if patient.get("expected_start_time") else None,
+            "expected_end_time": patient.get("expected_end_time").isoformat() if patient.get("expected_end_time") else None,
+            "expected_duration_minutes": patient.get("expected_duration_minutes"),
+            "initial_wait_minutes": patient.get("initial_wait_minutes"),
+            "checkin_deadline": patient.get("checkin_deadline").isoformat() if patient.get("checkin_deadline") else None,
+            "admitted_at": patient.get("admitted_at").isoformat() if patient.get("admitted_at") else None,
+            "completed_at": patient.get("completed_at").isoformat() if patient.get("completed_at") else None,
+            "actual_duration_minutes": patient.get("actual_duration_minutes"),
         })
-    
+
     return json.dumps({
         "queue_id": qdoc.get("queue_id", "main"),
         "start_time": qdoc.get("start_time").isoformat() if qdoc.get("start_time") else None,
-        "slot_seconds": qdoc.get("slot_seconds", 900),
+        "room_free_at": qdoc.get("room_free_at").isoformat() if qdoc.get("room_free_at") else None,
+        "global_delay_minutes": qdoc.get("global_delay_minutes", 0),
         "patients": formatted_patients,
-        "total_patients": len(formatted_patients),
-        "global_wait_time_minutes": GLOBAL_WAIT_TIME_MINUTES
+        "total_patients": len(formatted_patients)
     }), 200, {"Content-Type": "application/json"}
 
 # staff/reset: reset the queue (delete existing queue if one, and create a new one in its place)
@@ -99,75 +124,19 @@ def staff_reset():
     doc = {
         "queue_id": "main",
         "start_time": now,
-        "slot_seconds": 900,
+        "room_free_at": None,  # None means free now
+        "global_delay_minutes": 0,
         "patients": [],
         "created_at": now
     }
     queue_collection.insert_one(doc)
-    return json.dumps({"queue_id": "main", "start_time": now.isoformat(), "slot_seconds": 900}), 200, {"Content-Type": "application/json"}
-
-
-# staff/queue: get entire queue with all patients
-@app.route("/api/staff/queue", methods=["GET"])
-def staff_get_queue():
-    if queue_collection is None:
-        return json.dumps({"error": "MONGODB_URI not set"}), 500, {"Content-Type": "application/json"}
-
-    qdoc = queue_collection.find_one({"queue_id": "main"}) or queue_collection.find_one({})
-    if qdoc is None:
-        return json.dumps({"error": "queue not initialized"}), 400, {"Content-Type": "application/json"}
-
-    patients = qdoc.get("patients", [])
-    patients_with_position = []
-    i = 0
-    for p in patients:
-        patient_data = dict(p)
-        # ensure datetime fields are isoformatted
-        sc = patient_data.get("scheduled_time")
-        if isinstance(sc, datetime):
-            patient_data["scheduled_time"] = sc.isoformat()
-        patient_data["position"] = i
-        patients_with_position.append(patient_data)
-        i += 1
-
     return json.dumps({
-        "queue_id": qdoc.get("queue_id", "main"),
-        "start_time": qdoc.get("start_time").isoformat(),
-        "slot_seconds": qdoc.get("slot_seconds", 900),
-        "total_patients": len(patients),
-        "created_at": qdoc.get("created_at").isoformat(),
-        "patients": patients_with_position
+        "queue_id": "main",
+        "start_time": now.isoformat(),
+        "room_free_at": None,
+        "global_delay_minutes": 0
     }), 200, {"Content-Type": "application/json"}
 
-
-# staff/search: search patients by name
-@app.route("/api/staff/search", methods=["GET"])
-def staff_search():
-    if queue_collection is None:
-        return json.dumps({"error": "MONGODB_URI not set"}), 500, {"Content-Type": "application/json"}
-
-    qdoc = queue_collection.find_one({"queue_id": "main"}) or queue_collection.find_one({})
-    if qdoc is None:
-        return json.dumps({"error": "queue not initialized"}), 400, {"Content-Type": "application/json"}
-
-    search_name = (request.args.get("name") or "").strip()
-    if not search_name:
-        return json.dumps({"patients": []}), 200, {"Content-Type": "application/json"}
-
-    patients = qdoc.get("patients", [])
-    matches = []
-    i = 0
-    for p in patients:
-        if search_name.lower() in p.get("name", "").lower():
-            patient_data = dict(p)
-            sc = patient_data.get("scheduled_time")
-            if isinstance(sc, datetime):
-                patient_data["scheduled_time"] = sc.isoformat()
-            patient_data["position"] = i
-            matches.append(patient_data)
-        i += 1
-
-    return json.dumps({"patients": matches}), 200, {"Content-Type": "application/json"}
 
 
 # -----------------------------------------------------------
@@ -176,7 +145,7 @@ def staff_search():
 
 
 
-# patient/joinqueue: adds patient to the queue 
+# patient/joinqueue: adds patient to the queue
 @app.post("/api/patient/joinqueue")
 def patient_joinqueue():
     # mongo uri check
@@ -192,21 +161,50 @@ def patient_joinqueue():
     phone = request.form.get("phone") or ""
     dob = request.form.get("dob") or ""
     insurance = request.form.get("insurance") or ""
-    symptoms = request.form.get("symptoms") or ""
+    reason = (request.form.get("reason") or "").strip()
 
     patients = qdoc.get("patients", [])
     position = len(patients)
-    slot_seconds = int(qdoc.get("slot_seconds", 900))
-    start_time = qdoc.get("start_time")
-    scheduled_dt = start_time + timedelta(seconds=position * slot_seconds)
+
+    now = datetime.now()
+    room_free_at = qdoc.get("room_free_at")
+    effective_free_at = now if (room_free_at is None or room_free_at <= now) else room_free_at
+
+    # Estimate expected duration
+    reason_key = (reason or "").strip()
+    estimated_reason_minutes = REASON_ESTIMATE_MINUTES.get(reason_key, 15)
+    expected_duration_minutes = PREP_MINUTES + estimated_reason_minutes
+
+    expected_start_time = effective_free_at
+    expected_end_time = expected_start_time + timedelta(minutes=expected_duration_minutes)
+
+    # Initial wait minutes for this patient (static snapshot at join)
+    wait_seconds = max(0, (effective_free_at - now).total_seconds())
+    initial_wait_minutes = int(math.ceil(wait_seconds / 60.0)) if wait_seconds > 0 else 0
+
+    # Set deadline 5 minutes prior to expected start (but not before 'now')
+    checkin_deadline = None
+    # avoid conlicts with first patient check-in time requirements
+    check_in_by_str = "ASAP" if position == 0 else None
+    if position != 0:
+        deadline = expected_start_time - timedelta(minutes=5)
+        if deadline < now:
+            deadline = now
+        checkin_deadline = deadline
+        check_in_by_str = deadline.isoformat()
 
     patient = {
         "name": name,
         "phone": phone,
         "dob": dob,
         "insurance": insurance,
-        "symptoms": symptoms,
-        "scheduled_time": scheduled_dt,
+        "reason": reason,
+        "scheduled_time": expected_start_time,
+        "expected_start_time": expected_start_time,
+        "expected_end_time": expected_end_time,
+        "expected_duration_minutes": expected_duration_minutes,
+        "initial_wait_minutes": initial_wait_minutes,
+        "checkin_deadline": checkin_deadline,
         "status": "waiting",
         "checked_in": False,
         "checked_in_at": None,
@@ -215,18 +213,23 @@ def patient_joinqueue():
         "actual_duration_minutes": None
     }
 
-    queue_collection.update_one({"_id": qdoc["_id"]}, {"$push": {"patients": patient}})
-
-    # Calculate wait time including global delay
-    base_wait_minutes = (position * slot_seconds) // 60
-    total_wait_minutes = base_wait_minutes + GLOBAL_WAIT_TIME_MINUTES
+    # Add patient and advance room_free_at to expected_end_time
+    queue_collection.update_one(
+        {"_id": qdoc["_id"]},
+        {
+            "$push": {"patients": patient},
+            "$set": {"room_free_at": expected_end_time}
+        }
+    )
 
     return json.dumps({
         "position": position,
-        "scheduled_time": scheduled_dt.isoformat(),
-        "estimated_wait_minutes": base_wait_minutes,
-        "total_wait_minutes": total_wait_minutes,
-        "global_delay_minutes": GLOBAL_WAIT_TIME_MINUTES
+        "scheduled_time": expected_start_time.isoformat(),
+        "expected_start_time": expected_start_time.isoformat(),
+        "expected_end_time": expected_end_time.isoformat(),
+        "expected_duration_minutes": expected_duration_minutes,
+        "initial_wait_minutes": initial_wait_minutes,
+        "check_in_by": check_in_by_str
     }), 200, {"Content-Type": "application/json"}
 
 
@@ -239,7 +242,7 @@ def patient_checkin():
 
     name = (request.form.get("patient_name") or "").strip()
     dob = (request.form.get("dob") or "").strip()
-    
+
     if not name:
         return json.dumps({"error": "Patient name is required"}), 400, {"Content-Type": "application/json"}
 
@@ -251,14 +254,14 @@ def patient_checkin():
     # Find patient in the queue by name (and optionally DOB for disambiguation)
     patients = qdoc.get("patients", [])
     matching_patients = []
-    
+
     for i, patient in enumerate(patients):
         if patient.get("name", "").strip().lower() == name.lower():
             matching_patients.append((i, patient))
-    
+
     if not matching_patients:
         return json.dumps({"error": f"Patient '{name}' not found in queue"}), 404, {"Content-Type": "application/json"}
-    
+
     # If multiple patients with same name, use DOB to disambiguate
     if len(matching_patients) > 1:
         if not dob:
@@ -266,20 +269,20 @@ def patient_checkin():
                 "error": f"Multiple patients named '{name}' found. Please provide date of birth.",
                 "requires_dob": True
             }), 400, {"Content-Type": "application/json"}
-        
+
         # Filter by DOB
         matching_patients = [(i, p) for i, p in matching_patients if p.get("dob") == dob]
-        
+
         if not matching_patients:
             return json.dumps({"error": f"No patient '{name}' with DOB {dob} found"}), 404, {"Content-Type": "application/json"}
-    
+
     # Mark patient as checked in
     idx, patient = matching_patients[0]
     patients[idx]["checked_in"] = True
     patients[idx]["checked_in_at"] = datetime.now()
     patients[idx]["status"] = "checked_in"
     scheduled_time = patient.get("scheduled_time")
-    
+
     # Update the queue with the modified patients array
     queue_collection.update_one(
         {"_id": qdoc["_id"]},
@@ -313,22 +316,22 @@ def staff_admit():
     # Find patient in the queue by name
     patients = qdoc.get("patients", [])
     patient_found = False
-    
+
     for i, patient in enumerate(patients):
         if patient.get("name", "").strip().lower() == name.lower():
             # Check if patient is checked in
             if not patient.get("checked_in"):
                 return json.dumps({"error": "Patient must be checked in before being admitted"}), 400, {"Content-Type": "application/json"}
-            
+
             # Mark as admitted
             patients[i]["status"] = "admitted"
             patients[i]["admitted_at"] = datetime.now()
             patient_found = True
             break
-    
+
     if not patient_found:
         return json.dumps({"error": f"Patient '{name}' not found in queue"}), 404, {"Content-Type": "application/json"}
-    
+
     # Update the queue
     queue_collection.update_one(
         {"_id": qdoc["_id"]},
@@ -362,40 +365,62 @@ def staff_checkout():
     patients = qdoc.get("patients", [])
     patient_found = False
     patient_to_remove = None
-    
+
     for i, patient in enumerate(patients):
         if patient.get("name", "").strip().lower() == name.lower():
             # Check if patient is admitted
             if patient.get("status") != "admitted":
                 return json.dumps({"error": "Patient must be admitted before checkout"}), 400, {"Content-Type": "application/json"}
-            
+
             # Calculate duration
             admitted_at = patient.get("admitted_at")
             completed_at = datetime.now()
-            
+
             if admitted_at:
                 duration = (completed_at - admitted_at).total_seconds() / 60
                 patient["actual_duration_minutes"] = round(duration, 2)
             else:
                 patient["actual_duration_minutes"] = 0
-            
+
             patient["completed_at"] = completed_at
             patient["status"] = "completed"
-            
+
             patient_to_remove = i
             patient_found = True
             break
-    
+
     if not patient_found:
         return json.dumps({"error": f"Patient '{name}' not found in queue"}), 404, {"Content-Type": "application/json"}
-    
+
     # Remove patient from queue
     removed_patient = patients.pop(patient_to_remove)
-    
-    # Update the queue
+
+    # Determine expected vs actual to adjust scheduling
+    actual_minutes = removed_patient.get("actual_duration_minutes") or 0
+    expected_minutes = removed_patient.get("expected_duration_minutes")
+
+    # One-way delay to avoid future patients from being scheduled too early
+    delta_raw = int(round(actual_minutes - expected_minutes))
+    delta_minutes = max(0, delta_raw)
+
+    # Shift room_free_at by the delta so future estimates reflect reality
+    now = datetime.now()
+    current_room_free_at = qdoc.get("room_free_at")
+    base_time = current_room_free_at if current_room_free_at is not None else now
+    new_room_free_at = base_time + timedelta(minutes=delta_minutes)
+
+    # Update the queue: save patients, adjust room_free_at, and accumulate global delay
     queue_collection.update_one(
         {"_id": qdoc["_id"]},
-        {"$set": {"patients": patients}}
+        {
+            "$set": {
+                "patients": patients,
+                "room_free_at": new_room_free_at
+            },
+            "$inc": {
+                "global_delay_minutes": delta_minutes
+            }
+        }
     )
 
     return json.dumps({
@@ -404,62 +429,47 @@ def staff_checkout():
         "status": "completed",
         "actual_duration_minutes": removed_patient.get("actual_duration_minutes"),
         "admitted_at": removed_patient.get("admitted_at").isoformat() if removed_patient.get("admitted_at") else None,
-        "completed_at": removed_patient.get("completed_at").isoformat() if removed_patient.get("completed_at") else None
+        "completed_at": removed_patient.get("completed_at").isoformat() if removed_patient.get("completed_at") else None,
+        "expected_duration_minutes": expected_minutes,
+        "delta_minutes": delta_minutes,
+        "room_free_at": new_room_free_at.isoformat()
     }), 200, {"Content-Type": "application/json"}
 
-
-# patient/getstatus: get patient's queue status
-@app.route("/api/patient/getstatus", methods=["GET"])
-def patient_getstatus():
+def prune_no_shows():
     if queue_collection is None:
-        return json.dumps({"error": "MONGODB_URI not set"}), 500, {"Content-Type": "application/json"}
-
+        return
     qdoc = queue_collection.find_one({"queue_id": "main"}) or queue_collection.find_one({})
     if qdoc is None:
-        return json.dumps({"error": "queue not initialized"}), 400, {"Content-Type": "application/json"}
-
-    name = (request.args.get("patient_name") or "").strip()
-    phone = request.args.get("phone") or ""
-    if not name or not phone:
-        return json.dumps({"error": "patient_name and phone required"}), 400, {"Content-Type": "application/json"}
-
+        return
     patients = qdoc.get("patients", [])
-    patient = None
-    position = None
-    i = 0
-    for p in patients:
-        if p.get("name", "").strip() == name and p.get("phone", "") == phone:
-            patient = p
-            position = i
-            break
-        i += 1
-
-    if patient is None:
-        return json.dumps({"error": "patient not found"}), 404, {"Content-Type": "application/json"}
-
-    slot_seconds = int(qdoc.get("slot_seconds", 900))
-    scheduled_dt = patient.get("scheduled_time")
+    if not patients:
+        return
     now = datetime.now()
-    wait_seconds = max(0, (scheduled_dt - now).total_seconds())
-    wait_minutes = int(wait_seconds // 60)
+    kept = []
+    for p in patients:
+        if p.get("checked_in"):
+            kept.append(p)
+            continue
+        deadline = p.get("checkin_deadline")
+        if deadline is None or deadline > now:
+            kept.append(p)
+    if len(kept) != len(patients):
+        queue_collection.update_one({"_id": qdoc["_id"]}, {"$set": {"patients": kept}})
 
-    return json.dumps({
-        "name": patient.get("name"),
-        "phone": patient.get("phone"),
-        "position": position,
-        "scheduled_time": scheduled_dt.isoformat(),
-        "estimated_wait_minutes": wait_minutes,
-        "checked_in": patient.get("checked_in", False)
-    }), 200, {"Content-Type": "application/json"}
 
+def _prune_loop():
+    while True:
+        try:
+            prune_no_shows()
+        except Exception:
+            pass
+        time.sleep(60)
+
+
+def start_prune_thread():
+    t = threading.Thread(target=_prune_loop, daemon=True)
+    t.start()
 
 if __name__ == "__main__":
-    # Debug: print registered routes and file path to ensure correct server is running
-    try:
-        print("Loaded server from:", __file__)
-        print("Registered routes:",[r.rule for r in app.url_map.iter_rules()])
-    except Exception:
-        pass
+    start_prune_thread()
     app.run(host="127.0.0.1", port=PORT)
-
-
